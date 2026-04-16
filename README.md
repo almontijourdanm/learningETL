@@ -14,6 +14,7 @@ learningETL/
 				20260416000100-create-dukcapil.js
 				20260416000200-create-dpt.js
 				20260416000300-create-voting.js
+				20260416000500-make-voting-nik-unique.js
 			models/
 				dukcapil.js
 				dpt.js
@@ -177,6 +178,128 @@ Example response shape:
 	"data": []
 }
 ```
+
+ETL import:
+
+- POST /etl/import-voters
+
+Purpose:
+
+- Imports and normalizes data from CSV into `dukcapil`, `dpt`, and `voting` tables.
+- Tracks each import execution in `etl_import_runs`.
+
+Example request body:
+
+```json
+{
+	"batchSize": 500,
+	"filePath": "../data/raw_pemilu_full_dump.csv"
+}
+```
+
+ETL run summary:
+
+- GET /etl/import-runs/summary?limit=10
+
+Purpose:
+
+- Returns recent ETL runs with quality counters and aggregated metrics.
+- Helps monitor import quality and rerun behavior.
+
+Example response shape:
+
+```json
+{
+	"success": true,
+	"importRunId": "36",
+	"sourceFile": "D:\\Almonti\\Nominatix\\learningETL\\data\\raw_pemilu_full_dump.csv",
+	"batchSize": 500,
+	"totalRows": 300000,
+	"insertedDukcapil": 300000,
+	"insertedDpt": 300000,
+	"insertedVoting": 145670,
+	"skippedRows": 0,
+	"errorRows": 0,
+	"status": "success"
+}
+```
+
+## ETL Learning Purpose
+
+This project is intentionally built as a learning ETL pipeline, not a final production-grade pipeline.
+
+Main learning objectives:
+
+- Design an end-to-end ETL flow (Extract, Transform, Load) with real data volume.
+- Separate raw input into domain tables for different use cases.
+- Implement batching to handle large CSV files efficiently.
+- Add observability by recording run status and import metrics.
+- Practice data-quality hardening through iterative improvements.
+
+## ETL Process In This Project
+
+1. Extract
+
+- Source file: `data/raw_pemilu_full_dump.csv`.
+- The service reads data using a stream parser to avoid loading all rows in memory.
+
+2. Transform
+
+- Normalize column names and string values (trim/cleanup).
+- Standardize NIK and parse date/date-time fields.
+- Build three entities from one source row:
+- `dukcapil`: identity-focused record.
+- `dpt`: election list-focused record.
+- `voting`: vote event when row is valid for voting facts.
+
+3. Load
+
+- Process rows in batches (default 500, max 1000).
+- Upsert by `nik` into `dukcapil` and `dpt` (rerun-safe for those tables).
+- Insert voting events into `voting` with conflict-safe behavior (`ON CONFLICT (nik) DO NOTHING`).
+
+4. Track and Report
+
+- Every import run is written to `etl_import_runs` with `running` or `success`/`failed` status.
+- Metrics include total rows, inserted counts, skipped rows, and errors.
+- Additional counters include:
+- `updated_dukcapil`, `updated_dpt`, `affected_dukcapil`, `affected_dpt`
+- `rows_without_nik`, `hadir_false_rows`, `invalid_flag_true_rows`, `invalid_voted_at_rows`
+- `voting_eligible_rows`, `voting_ineligible_rows`
+
+5. Validate Business Output
+
+- `POST /etl/validate-voter` returns voters in `dpt` who are not present in `voting`.
+
+## Why Data Can Still Be "Not Good" Right Now
+
+This is expected in a learning ETL phase.
+
+Current known gaps:
+
+- Existing legacy data may still contain duplicates until migration is applied.
+- Source values can be noisy or inconsistent, so transformations are still basic.
+- There is no reject/quarantine table yet for problematic rows.
+
+This is exactly where ETL learning happens: run pipeline, inspect outcomes, then tighten quality rules.
+
+## Suggested Next Improvements
+
+1. Make `voting` idempotent on reruns:
+
+- Done in this repo:
+- Add unique index on `voting.nik` via migration `20260416000500-make-voting-nik-unique.js`.
+- Use `ON CONFLICT (nik) DO NOTHING` in import service.
+
+2. Add data-quality controls:
+
+- Add validation rules for critical fields.
+- Track rejected rows with reason codes.
+
+3. Improve observability:
+
+- Add endpoint for recent import run history.
+- Add per-run quality summary (duplicate, null, invalid date stats).
 
 ## Notes For Large Data
 

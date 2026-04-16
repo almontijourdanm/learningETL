@@ -58,7 +58,10 @@ function mapRowToEntities(rawRow) {
   const nik = normalizeNik(row.nik);
 
   if (!nik) {
-    return null;
+    return {
+      shouldSkip: true,
+      reason: 'missing_nik',
+    };
   }
 
   const nama = normalizeString(row.nama);
@@ -107,9 +110,17 @@ function mapRowToEntities(rawRow) {
     : null;
 
   return {
+    shouldSkip: false,
     dukcapil,
     dpt,
     voting,
+    quality: {
+      hadirFalseRows: hadir ? 0 : 1,
+      invalidFlagTrueRows: invalidFlag ? 1 : 0,
+      invalidVotedAtRows: hadir && !invalidFlag && !votedAt ? 1 : 0,
+      votingEligibleRows: voting ? 1 : 0,
+      votingIneligibleRows: voting ? 0 : 1,
+    },
   };
 }
 
@@ -136,7 +147,11 @@ function buildValuesAndReplacements(records, columns, prefix) {
 
 async function upsertByNik(sequelize, tableName, records, columns, updateColumns, prefix) {
   if (records.length === 0) {
-    return 0;
+    return {
+      inserted: 0,
+      updated: 0,
+      affected: 0,
+    };
   }
 
   const dedupedByNik = Array.from(new Map(records.map((record) => [record.nik, record])).values());
@@ -149,11 +164,19 @@ async function upsertByNik(sequelize, tableName, records, columns, updateColumns
     VALUES ${valuesSql}
     ON CONFLICT (nik) DO UPDATE
     SET ${updateSql}
-    RETURNING nik;
+    RETURNING ((xmax = 0)::int) AS inserted_flag;
   `;
 
   const result = await sequelize.query(sql, { replacements });
-  return Array.isArray(result?.[0]) ? result[0].length : 0;
+  const rows = Array.isArray(result?.[0]) ? result[0] : [];
+  const inserted = rows.reduce((count, row) => count + (Number(row.inserted_flag) === 1 ? 1 : 0), 0);
+  const affected = rows.length;
+
+  return {
+    inserted,
+    updated: affected - inserted,
+    affected,
+  };
 }
 
 async function insertVotingIfNotExists(sequelize, records) {
@@ -171,6 +194,7 @@ async function insertVotingIfNotExists(sequelize, records) {
   const sql = `
     INSERT INTO voting (nik, voted_at)
     VALUES ${valuesSql}
+    ON CONFLICT (nik) DO NOTHING
     RETURNING nik;
   `;
 
@@ -179,7 +203,7 @@ async function insertVotingIfNotExists(sequelize, records) {
 }
 
 async function flushBatch(sequelize, batch, summary) {
-  const insertedDukcapil = await upsertByNik(
+  const dukcapilStats = await upsertByNik(
     sequelize,
     'dukcapil',
     batch.dukcapil,
@@ -187,7 +211,7 @@ async function flushBatch(sequelize, batch, summary) {
     ['nama', 'tanggal_lahir', 'alamat'],
     'dukcapil'
   );
-  const insertedDpt = await upsertByNik(
+  const dptStats = await upsertByNik(
     sequelize,
     'dpt',
     batch.dpt,
@@ -197,8 +221,12 @@ async function flushBatch(sequelize, batch, summary) {
   );
   const insertedVoting = await insertVotingIfNotExists(sequelize, batch.voting);
 
-  summary.insertedDukcapil += insertedDukcapil;
-  summary.insertedDpt += insertedDpt;
+  summary.insertedDukcapil += dukcapilStats.inserted;
+  summary.updatedDukcapil += dukcapilStats.updated;
+  summary.affectedDukcapil += dukcapilStats.affected;
+  summary.insertedDpt += dptStats.inserted;
+  summary.updatedDpt += dptStats.updated;
+  summary.affectedDpt += dptStats.affected;
   summary.insertedVoting += insertedVoting;
 
   batch.dukcapil.length = 0;
@@ -231,9 +259,19 @@ async function importVotersFromCsv({ sequelize, EtlImportRun, filePath, batchSiz
     batchSize: normalizedBatchSize,
     totalRows: 0,
     insertedDukcapil: 0,
+    updatedDukcapil: 0,
+    affectedDukcapil: 0,
     insertedDpt: 0,
+    updatedDpt: 0,
+    affectedDpt: 0,
     insertedVoting: 0,
     skippedRows: 0,
+    rowsWithoutNik: 0,
+    hadirFalseRows: 0,
+    invalidFlagTrueRows: 0,
+    invalidVotedAtRows: 0,
+    votingEligibleRows: 0,
+    votingIneligibleRows: 0,
     errorRows: 0,
   };
 
@@ -251,10 +289,19 @@ async function importVotersFromCsv({ sequelize, EtlImportRun, filePath, batchSiz
 
       const mapped = mapRowToEntities(row);
 
-      if (!mapped) {
+      if (mapped.shouldSkip) {
         summary.skippedRows += 1;
+        if (mapped.reason === 'missing_nik') {
+          summary.rowsWithoutNik += 1;
+        }
         continue;
       }
+
+      summary.hadirFalseRows += mapped.quality.hadirFalseRows;
+      summary.invalidFlagTrueRows += mapped.quality.invalidFlagTrueRows;
+      summary.invalidVotedAtRows += mapped.quality.invalidVotedAtRows;
+      summary.votingEligibleRows += mapped.quality.votingEligibleRows;
+      summary.votingIneligibleRows += mapped.quality.votingIneligibleRows;
 
       batch.dukcapil.push(mapped.dukcapil);
       batch.dpt.push(mapped.dpt);
@@ -275,9 +322,19 @@ async function importVotersFromCsv({ sequelize, EtlImportRun, filePath, batchSiz
       finished_at: new Date(),
       total_rows: summary.totalRows,
       inserted_dukcapil: summary.insertedDukcapil,
+      updated_dukcapil: summary.updatedDukcapil,
+      affected_dukcapil: summary.affectedDukcapil,
       inserted_dpt: summary.insertedDpt,
+      updated_dpt: summary.updatedDpt,
+      affected_dpt: summary.affectedDpt,
       inserted_voting: summary.insertedVoting,
       skipped_rows: summary.skippedRows,
+      rows_without_nik: summary.rowsWithoutNik,
+      hadir_false_rows: summary.hadirFalseRows,
+      invalid_flag_true_rows: summary.invalidFlagTrueRows,
+      invalid_voted_at_rows: summary.invalidVotedAtRows,
+      voting_eligible_rows: summary.votingEligibleRows,
+      voting_ineligible_rows: summary.votingIneligibleRows,
       error_rows: summary.errorRows,
     });
 
@@ -291,9 +348,19 @@ async function importVotersFromCsv({ sequelize, EtlImportRun, filePath, batchSiz
       finished_at: new Date(),
       total_rows: summary.totalRows,
       inserted_dukcapil: summary.insertedDukcapil,
+      updated_dukcapil: summary.updatedDukcapil,
+      affected_dukcapil: summary.affectedDukcapil,
       inserted_dpt: summary.insertedDpt,
+      updated_dpt: summary.updatedDpt,
+      affected_dpt: summary.affectedDpt,
       inserted_voting: summary.insertedVoting,
       skipped_rows: summary.skippedRows,
+      rows_without_nik: summary.rowsWithoutNik,
+      hadir_false_rows: summary.hadirFalseRows,
+      invalid_flag_true_rows: summary.invalidFlagTrueRows,
+      invalid_voted_at_rows: summary.invalidVotedAtRows,
+      voting_eligible_rows: summary.votingEligibleRows,
+      voting_ineligible_rows: summary.votingIneligibleRows,
       error_rows: summary.errorRows + 1,
       error_message: error.message,
     });

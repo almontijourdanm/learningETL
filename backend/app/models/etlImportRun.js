@@ -36,7 +36,27 @@ module.exports = (sequelize) => {
         allowNull: false,
         defaultValue: 0,
       },
+      updated_dukcapil: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+      },
+      affected_dukcapil: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+      },
       inserted_dpt: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+      },
+      updated_dpt: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+      },
+      affected_dpt: {
         type: DataTypes.INTEGER,
         allowNull: false,
         defaultValue: 0,
@@ -47,6 +67,36 @@ module.exports = (sequelize) => {
         defaultValue: 0,
       },
       skipped_rows: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+      },
+      rows_without_nik: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+      },
+      hadir_false_rows: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+      },
+      invalid_flag_true_rows: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+      },
+      invalid_voted_at_rows: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+      },
+      voting_eligible_rows: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+      },
+      voting_ineligible_rows: {
         type: DataTypes.INTEGER,
         allowNull: false,
         defaultValue: 0,
