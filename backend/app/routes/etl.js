@@ -1,5 +1,6 @@
 const express = require('express');
 const { QueryTypes } = require('sequelize');
+const { importVotersFromCsv } = require('../services/voterImportService');
 
 function parsePositiveInt(value, fallback) {
   if (value === undefined || value === null || value === '') {
@@ -10,7 +11,7 @@ function parsePositiveInt(value, fallback) {
   return Number.isInteger(parsedValue) && parsedValue >= 0 ? parsedValue : fallback;
 }
 
-function createEtlRouter(sequelize) {
+function createEtlRouter(sequelize, models = {}) {
   if (!sequelize || typeof sequelize.query !== 'function') {
     throw new Error('A valid Sequelize instance is required to create the ETL router.');
   }
@@ -62,6 +63,27 @@ function createEtlRouter(sequelize) {
         limit,
         offset,
         data: rows,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  router.post('/import-voters', async (req, res, next) => {
+    try {
+      const batchSize = parsePositiveInt(req.body?.batchSize, 500);
+      const filePath = req.body?.filePath;
+
+      const result = await importVotersFromCsv({
+        sequelize,
+        EtlImportRun: models.EtlImportRun,
+        filePath,
+        batchSize,
+      });
+
+      return res.status(200).json({
+        success: true,
+        ...result,
       });
     } catch (error) {
       return next(error);

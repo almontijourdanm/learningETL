@@ -15,10 +15,12 @@ const sequelize = new Sequelize(
 const Dukcapil = require('./dukcapil')(sequelize);
 const Dpt = require('./dpt')(sequelize);
 const Voting = require('./voting')(sequelize);
+const EtlImportRun = require('./etlImportRun')(sequelize);
 
 module.exports = {
   sequelize,
   Dukcapil,
   Dpt,
   Voting,
+  EtlImportRun,
 };
