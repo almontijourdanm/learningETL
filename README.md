@@ -209,11 +209,24 @@ Purpose:
 Fuzzy duplicate candidates:
 
 - GET /etl/duplicate-candidates?importRunId=39&limit=20&offset=0&minScore=0.88
+- GET /etl/duplicate-candidates/summary?importRunId=39
+- GET /etl/duplicate-candidates/analyze?minScore=0.75&maxRows=3000&limit=200
+- PATCH /etl/duplicate-candidates/:id/review
 
 Purpose:
 
 - Returns possible duplicate pairs detected during ETL.
 - This is detection only; records are never auto-merged.
+- `analyze` endpoint is read-only exploration mode and does not persist candidates.
+
+Review request body example:
+
+```json
+{
+	"reviewStatus": "accepted",
+	"reviewerNote": "Same person, confirmed manually"
+}
+```
 
 Example response shape:
 
@@ -285,6 +298,12 @@ This project now supports phase-1 fuzzy candidate detection:
 - Store candidate pairs with `similarity_score` and `match_reason` in `etl_duplicate_candidates`.
 - Keep `review_status` as `pending` by default.
 - No automatic merge is performed.
+
+Phase-2 review workflow:
+
+- Reviewer can mark candidates as `accepted`, `rejected`, or back to `pending`.
+- Review metadata is stored in `reviewer_note` and `reviewed_at`.
+- Summary endpoint provides status counts for triage.
 
 5. Validate Business Output
 

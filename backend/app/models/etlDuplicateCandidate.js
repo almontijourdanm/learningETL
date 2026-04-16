@@ -51,6 +51,14 @@ module.exports = (sequelize) => {
         allowNull: false,
         defaultValue: 'pending',
       },
+      reviewer_note: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+      },
+      reviewed_at: {
+        type: DataTypes.DATE,
+        allowNull: true,
+      },
     },
     {
       tableName: 'etl_duplicate_candidates',
