@@ -4,6 +4,8 @@ const csvParser = require('csv-parser');
 
 const DEFAULT_BATCH_SIZE = 500;
 const MAX_BATCH_SIZE = 1000;
+const CANDIDATE_BATCH_SIZE = 200;
+const FUZZY_SCORE_THRESHOLD = 0.88;
 const DEFAULT_SOURCE_FILE = path.resolve(__dirname, '../../../data/raw_pemilu_full_dump.csv');
 
 function parseDateOnly(value) {
@@ -36,6 +38,102 @@ function normalizeString(value) {
 function normalizeNik(value) {
   const normalized = normalizeString(value);
   return normalized ? normalized.replace(/\s+/g, '') : null;
+}
+
+function canonicalizeText(value) {
+  const normalized = normalizeString(value);
+
+  if (!normalized) {
+    return '';
+  }
+
+  return normalized
+    .toLowerCase()
+    .replace(/\bjl\.?\b/g, 'jalan')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function tokenize(value) {
+  return new Set(canonicalizeText(value).split(' ').filter(Boolean));
+}
+
+function jaccardSimilarity(leftValue, rightValue) {
+  const leftTokens = tokenize(leftValue);
+  const rightTokens = tokenize(rightValue);
+
+  if (leftTokens.size === 0 && rightTokens.size === 0) {
+    return 1;
+  }
+
+  if (leftTokens.size === 0 || rightTokens.size === 0) {
+    return 0;
+  }
+
+  let intersectionSize = 0;
+  for (const token of leftTokens) {
+    if (rightTokens.has(token)) {
+      intersectionSize += 1;
+    }
+  }
+
+  const unionSize = leftTokens.size + rightTokens.size - intersectionSize;
+  return unionSize > 0 ? intersectionSize / unionSize : 0;
+}
+
+function buildDuplicateDetectionKey(dukcapilRecord) {
+  const canonicalName = canonicalizeText(dukcapilRecord.nama);
+  const canonicalAddress = canonicalizeText(dukcapilRecord.alamat);
+
+  return {
+    key: `${dukcapilRecord.tanggal_lahir || 'unknown'}|${canonicalName.slice(0, 8)}|${canonicalAddress.slice(0, 8)}`,
+    canonicalName,
+    canonicalAddress,
+  };
+}
+
+function buildDuplicateCandidate(currentRecord, previousRecord, nameSimilarity, addressSimilarity) {
+  const score = (nameSimilarity * 0.75) + (addressSimilarity * 0.25);
+
+  if (score < FUZZY_SCORE_THRESHOLD) {
+    return null;
+  }
+
+  return {
+    source_nik: currentRecord.nik,
+    matched_nik: previousRecord.nik,
+    source_name: currentRecord.nama,
+    matched_name: previousRecord.nama,
+    source_address: currentRecord.alamat,
+    matched_address: previousRecord.alamat,
+    similarity_score: Number(score.toFixed(4)),
+    match_reason: `name_similarity=${nameSimilarity.toFixed(4)},address_similarity=${addressSimilarity.toFixed(4)},tanggal_lahir_match=${currentRecord.tanggal_lahir || 'unknown'}`,
+  };
+}
+
+function detectFuzzyCandidate(currentRecord, previousRecord) {
+  if (!currentRecord || !previousRecord || currentRecord.nik === previousRecord.nik) {
+    return null;
+  }
+
+  if (!currentRecord.tanggal_lahir || currentRecord.tanggal_lahir !== previousRecord.tanggal_lahir) {
+    return null;
+  }
+
+  const nameSimilarity = jaccardSimilarity(currentRecord.nama, previousRecord.nama);
+  const addressSimilarity = jaccardSimilarity(currentRecord.alamat, previousRecord.alamat);
+
+  return buildDuplicateCandidate(currentRecord, previousRecord, nameSimilarity, addressSimilarity);
+}
+
+async function flushCandidateBatch(EtlDuplicateCandidate, candidateBatch) {
+  if (!EtlDuplicateCandidate || candidateBatch.length === 0) {
+    return;
+  }
+
+  await EtlDuplicateCandidate.bulkCreate(candidateBatch);
+  candidateBatch.length = 0;
 }
 
 function toBoolean(value) {
@@ -234,7 +332,7 @@ async function flushBatch(sequelize, batch, summary) {
   batch.voting.length = 0;
 }
 
-async function importVotersFromCsv({ sequelize, EtlImportRun, filePath, batchSize = DEFAULT_BATCH_SIZE }) {
+async function importVotersFromCsv({ sequelize, EtlImportRun, EtlDuplicateCandidate, filePath, batchSize = DEFAULT_BATCH_SIZE }) {
   if (!EtlImportRun) {
     throw new Error('EtlImportRun model is required for import tracking.');
   }
@@ -280,6 +378,9 @@ async function importVotersFromCsv({ sequelize, EtlImportRun, filePath, batchSiz
     dpt: [],
     voting: [],
   };
+  const candidateBatch = [];
+  const candidateSignatureSet = new Set();
+  const duplicateBuckets = new Map();
 
   try {
     const stream = fs.createReadStream(sourceFile).pipe(csvParser());
@@ -303,6 +404,40 @@ async function importVotersFromCsv({ sequelize, EtlImportRun, filePath, batchSiz
       summary.votingEligibleRows += mapped.quality.votingEligibleRows;
       summary.votingIneligibleRows += mapped.quality.votingIneligibleRows;
 
+      if (EtlDuplicateCandidate) {
+        const currentRecord = mapped.dukcapil;
+        const { key } = buildDuplicateDetectionKey(currentRecord);
+        const bucket = duplicateBuckets.get(key) || [];
+
+        for (const previousRecord of bucket) {
+          const candidate = detectFuzzyCandidate(currentRecord, previousRecord);
+
+          if (!candidate) {
+            continue;
+          }
+
+          const orderedNik = [candidate.source_nik, candidate.matched_nik].sort();
+          const signature = `${importRun.id}|${orderedNik[0]}|${orderedNik[1]}`;
+
+          if (candidateSignatureSet.has(signature)) {
+            continue;
+          }
+
+          candidateSignatureSet.add(signature);
+          candidateBatch.push({
+            import_run_id: importRun.id,
+            ...candidate,
+          });
+
+          if (candidateBatch.length >= CANDIDATE_BATCH_SIZE) {
+            await flushCandidateBatch(EtlDuplicateCandidate, candidateBatch);
+          }
+        }
+
+        bucket.push(currentRecord);
+        duplicateBuckets.set(key, bucket);
+      }
+
       batch.dukcapil.push(mapped.dukcapil);
       batch.dpt.push(mapped.dpt);
 
@@ -316,6 +451,7 @@ async function importVotersFromCsv({ sequelize, EtlImportRun, filePath, batchSiz
     }
 
     await flushBatch(sequelize, batch, summary);
+    await flushCandidateBatch(EtlDuplicateCandidate, candidateBatch);
 
     await importRun.update({
       status: 'success',
@@ -335,14 +471,18 @@ async function importVotersFromCsv({ sequelize, EtlImportRun, filePath, batchSiz
       invalid_voted_at_rows: summary.invalidVotedAtRows,
       voting_eligible_rows: summary.votingEligibleRows,
       voting_ineligible_rows: summary.votingIneligibleRows,
+      duplicate_candidates: candidateSignatureSet.size,
       error_rows: summary.errorRows,
     });
 
     return {
       ...summary,
+      duplicateCandidates: candidateSignatureSet.size,
       status: 'success',
     };
   } catch (error) {
+    await flushCandidateBatch(EtlDuplicateCandidate, candidateBatch);
+
     await importRun.update({
       status: 'failed',
       finished_at: new Date(),
@@ -361,6 +501,7 @@ async function importVotersFromCsv({ sequelize, EtlImportRun, filePath, batchSiz
       invalid_voted_at_rows: summary.invalidVotedAtRows,
       voting_eligible_rows: summary.votingEligibleRows,
       voting_ineligible_rows: summary.votingIneligibleRows,
+      duplicate_candidates: candidateSignatureSet.size,
       error_rows: summary.errorRows + 1,
       error_message: error.message,
     });

@@ -206,6 +206,15 @@ Purpose:
 - Returns recent ETL runs with quality counters and aggregated metrics.
 - Helps monitor import quality and rerun behavior.
 
+Fuzzy duplicate candidates:
+
+- GET /etl/duplicate-candidates?importRunId=39&limit=20&offset=0&minScore=0.88
+
+Purpose:
+
+- Returns possible duplicate pairs detected during ETL.
+- This is detection only; records are never auto-merged.
+
 Example response shape:
 
 ```json
@@ -266,6 +275,16 @@ Main learning objectives:
 - `updated_dukcapil`, `updated_dpt`, `affected_dukcapil`, `affected_dpt`
 - `rows_without_nik`, `hadir_false_rows`, `invalid_flag_true_rows`, `invalid_voted_at_rows`
 - `voting_eligible_rows`, `voting_ineligible_rows`
+- `duplicate_candidates`
+
+## Fuzzy Candidate Phase
+
+This project now supports phase-1 fuzzy candidate detection:
+
+- Detect likely duplicate identities using canonicalized name/address plus matching `tanggal_lahir`.
+- Store candidate pairs with `similarity_score` and `match_reason` in `etl_duplicate_candidates`.
+- Keep `review_status` as `pending` by default.
+- No automatic merge is performed.
 
 5. Validate Business Output
 

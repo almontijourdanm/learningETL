@@ -101,6 +101,11 @@ module.exports = (sequelize) => {
         allowNull: false,
         defaultValue: 0,
       },
+      duplicate_candidates: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+      },
       error_rows: {
         type: DataTypes.INTEGER,
         allowNull: false,

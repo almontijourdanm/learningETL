@@ -1,5 +1,5 @@
 const express = require('express');
-const { QueryTypes } = require('sequelize');
+const { QueryTypes, Op } = require('sequelize');
 const { importVotersFromCsv } = require('../services/voterImportService');
 
 function parsePositiveInt(value, fallback) {
@@ -77,6 +77,7 @@ function createEtlRouter(sequelize, models = {}) {
       const result = await importVotersFromCsv({
         sequelize,
         EtlImportRun: models.EtlImportRun,
+        EtlDuplicateCandidate: models.EtlDuplicateCandidate,
         filePath,
         batchSize,
       });
@@ -123,6 +124,7 @@ function createEtlRouter(sequelize, models = {}) {
           accumulator.invalidVotedAtRows += Number(run.invalid_voted_at_rows || 0);
           accumulator.votingEligibleRows += Number(run.voting_eligible_rows || 0);
           accumulator.votingIneligibleRows += Number(run.voting_ineligible_rows || 0);
+          accumulator.duplicateCandidates += Number(run.duplicate_candidates || 0);
           accumulator.errorRows += Number(run.error_rows || 0);
           return accumulator;
         },
@@ -142,6 +144,7 @@ function createEtlRouter(sequelize, models = {}) {
           invalidVotedAtRows: 0,
           votingEligibleRows: 0,
           votingIneligibleRows: 0,
+          duplicateCandidates: 0,
           errorRows: 0,
         }
       );
@@ -165,9 +168,58 @@ function createEtlRouter(sequelize, models = {}) {
               skippedRate: latestTotalRows > 0
                 ? Number(latestRun.skipped_rows || 0) / latestTotalRows
                 : 0,
+              duplicateCandidateRate: latestTotalRows > 0
+                ? Number(latestRun.duplicate_candidates || 0) / latestTotalRows
+                : 0,
             }
           : null,
         runs: plainRuns,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  router.get('/duplicate-candidates', async (req, res, next) => {
+    try {
+      if (!models.EtlDuplicateCandidate || typeof models.EtlDuplicateCandidate.findAll !== 'function') {
+        throw new Error('EtlDuplicateCandidate model is required to retrieve duplicate candidates.');
+      }
+
+      const importRunId = parsePositiveInt(req.query?.importRunId, null);
+      const requestedLimit = parsePositiveInt(req.query?.limit, 20);
+      const limit = Math.min(Math.max(requestedLimit || 20, 1), 200);
+      const offset = parsePositiveInt(req.query?.offset, 0);
+      const minScore = Number.parseFloat(req.query?.minScore ?? '0.88');
+      const normalizedMinScore = Number.isFinite(minScore) ? Math.max(Math.min(minScore, 1), 0) : 0.88;
+
+      const where = {
+        similarity_score: {
+          [Op.gte]: normalizedMinScore,
+        },
+      };
+
+      if (importRunId !== null) {
+        where.import_run_id = importRunId;
+      }
+
+      const { rows, count } = await models.EtlDuplicateCandidate.findAndCountAll({
+        where,
+        order: [
+          ['similarity_score', 'DESC'],
+          ['id', 'DESC'],
+        ],
+        limit,
+        offset,
+      });
+
+      return res.status(200).json({
+        success: true,
+        total: count,
+        limit,
+        offset,
+        minScore: normalizedMinScore,
+        data: rows,
       });
     } catch (error) {
       return next(error);

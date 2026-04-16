@@ -16,6 +16,7 @@ const Dukcapil = require('./dukcapil')(sequelize);
 const Dpt = require('./dpt')(sequelize);
 const Voting = require('./voting')(sequelize);
 const EtlImportRun = require('./etlImportRun')(sequelize);
+const EtlDuplicateCandidate = require('./etlDuplicateCandidate')(sequelize);
 
 module.exports = {
   sequelize,
@@ -23,4 +24,5 @@ module.exports = {
   Dpt,
   Voting,
   EtlImportRun,
+  EtlDuplicateCandidate,
 };
